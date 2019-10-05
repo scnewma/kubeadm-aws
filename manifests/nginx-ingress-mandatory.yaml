@@ -206,6 +206,13 @@ spec:
     matchLabels:
       app.kubernetes.io/name: ingress-nginx
       app.kubernetes.io/part-of: ingress-nginx
+  # this strategy is required so that new pods
+  # can start up without port conflicts since we
+  # are using hostPorts
+  strategy:
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 100%
   template:
     metadata:
       labels:
@@ -226,7 +233,6 @@ spec:
             - --configmap=$(POD_NAMESPACE)/nginx-configuration
             - --tcp-services-configmap=$(POD_NAMESPACE)/tcp-services
             - --udp-services-configmap=$(POD_NAMESPACE)/udp-services
-            - --publish-service=$(POD_NAMESPACE)/ingress-nginx
             - --annotations-prefix=nginx.ingress.kubernetes.io
           securityContext:
             allowPrivilegeEscalation: true

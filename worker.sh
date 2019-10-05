@@ -8,38 +8,41 @@ systemctl disable snapd snapd.socket lxcfs snap.amazon-ssm-agent.amazon-ssm-agen
 swapoff -a
 sed -i '/swap/d' /etc/fstab
 
-# Install K8S, kubeadm and Docker
-curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
-echo "deb http://apt.kubernetes.io/ kubernetes-xenial main" > /etc/apt/sources.list.d/kubernetes.list
-export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y kubelet=${k8sversion}-00 kubeadm=${k8sversion}-00 kubectl=${k8sversion}-00 docker.io
-apt-mark hold kubelet kubeadm kubectl docker.io
-
-# Point Docker at big ephemeral drive and turn on log rotation
-systemctl stop docker
-mkdir /mnt/docker
-chmod 711 /mnt/docker
-cat <<EOF > /etc/docker/daemon.json
+# Install docker
+apt-get update && apt-get install -y apt-transport-https ca-certificates curl software-properties-common
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
+add-apt-repository \
+  "deb [arch=amd64] https://download.docker.com/linux/ubuntu \
+  $(lsb_release -cs) \
+  stable"
+apt-get update && apt-get install -y docker-ce=18.06.2~ce~3-0~ubuntu
+cat > /etc/docker/daemon.json <<EOF
 {
-    "data-root": "/mnt/docker",
-    "log-driver": "json-file",
-    "log-opts": {
-        "max-size": "10m",
-        "max-file": "5"
-    }
+  "exec-opts": ["native.cgroupdriver=systemd"],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m"
+  },
+  "storage-driver": "overlay2"
 }
 EOF
-systemctl start docker
-systemctl enable docker
+mkdir -p /etc/systemd/system/docker.service.d
+systemctl daemon-reload
+systemctl restart docker
+
+# Install kubelet, kubeadm, kubectl
+apt-get update && apt-get install -y apt-transport-https curl awscli jq
+curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
+cat <<EOF >/etc/apt/sources.list.d/kubernetes.list
+deb https://apt.kubernetes.io/ kubernetes-xenial main
+EOF
+apt-get update
+apt-get install -y kubelet=${k8sversion}-00 kubeadm=${k8sversion}-00 kubectl=${k8sversion}-00
+apt-mark hold kubelet kubeadm kubectl
 
 # Point kubelet at big ephemeral drive
 mkdir /mnt/kubelet
 echo 'KUBELET_EXTRA_ARGS="--root-dir=/mnt/kubelet --cloud-provider=aws"' > /etc/default/kubelet
-
-# Pass bridged IPv4 traffic to iptables chains (required by Flannel)
-echo "net.bridge.bridge-nf-call-iptables = 1" > /etc/sysctl.d/60-flannel.conf
-service procps start
 
 # Join the cluster
 for i in {1..50}; do kubeadm join --token=${k8stoken} --discovery-token-unsafe-skip-ca-verification --node-name=$(hostname -f) ${masterIP}:6443 && break || sleep 15; done

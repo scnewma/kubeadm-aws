@@ -2,3 +2,4 @@
 *.backup
 .terraform
 token.txt
+k8s.tfvars

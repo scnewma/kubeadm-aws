@@ -8,37 +8,44 @@ systemctl disable snapd snapd.socket lxcfs snap.amazon-ssm-agent.amazon-ssm-agen
 swapoff -a
 sed -i '/swap/d' /etc/fstab
 
-# Install K8S, kubeadm and Docker
+# Install docker
+apt-get update && apt-get install -y apt-transport-https ca-certificates curl software-properties-common
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
+add-apt-repository \
+  "deb [arch=amd64] https://download.docker.com/linux/ubuntu \
+  $(lsb_release -cs) \
+  stable"
+apt-get update && apt-get install -y docker-ce=18.06.2~ce~3-0~ubuntu
+cat > /etc/docker/daemon.json <<EOF
+{
+  "exec-opts": ["native.cgroupdriver=systemd"],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m"
+  },
+  "storage-driver": "overlay2"
+}
+EOF
+mkdir -p /etc/systemd/system/docker.service.d
+systemctl daemon-reload
+systemctl restart docker
+
+# Install kubelet, kubeadm, kubectl
+apt-get update && apt-get install -y apt-transport-https curl awscli jq
 curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
-echo "deb http://apt.kubernetes.io/ kubernetes-xenial main" > /etc/apt/sources.list.d/kubernetes.list
-export DEBIAN_FRONTEND=noninteractive
+cat <<EOF >/etc/apt/sources.list.d/kubernetes.list
+deb https://apt.kubernetes.io/ kubernetes-xenial main
+EOF
 apt-get update
-apt-get install -y kubelet=${k8sversion}-00 kubeadm=${k8sversion}-00 kubectl=${k8sversion}-00 awscli jq docker.io
-apt-mark hold kubelet kubeadm kubectl docker.io
+apt-get install -y kubelet=${k8sversion}-00 kubeadm=${k8sversion}-00 kubectl=${k8sversion}-00
+apt-mark hold kubelet kubeadm kubectl
 
 # Install etcdctl for the version of etcd we're running
-ETCD_VERSION=$(kubeadm config images list | grep etcd | cut -d':' -f2)
+ETCD_VERSION=$(kubeadm config images list | grep etcd | cut -d':' -f2 | cut -d'-' -f1)
 wget "https://github.com/coreos/etcd/releases/download/v$${ETCD_VERSION}/etcd-v$${ETCD_VERSION}-linux-amd64.tar.gz"
 tar xvf "etcd-v$${ETCD_VERSION}-linux-amd64.tar.gz"
 mv "etcd-v$${ETCD_VERSION}-linux-amd64/etcdctl" /usr/local/bin/
 rm -rf etcd*
-
-# Point Docker at big ephemeral drive and turn on log rotation
-systemctl stop docker
-mkdir /mnt/docker
-chmod 711 /mnt/docker
-cat <<EOF > /etc/docker/daemon.json
-{
-    "data-root": "/mnt/docker",
-    "log-driver": "json-file",
-    "log-opts": {
-        "max-size": "10m",
-        "max-file": "5"
-    }
-}
-EOF
-systemctl start docker
-systemctl enable docker
 
 # Work around the fact spot requests can't tag their instances
 REGION=$(ec2metadata --availability-zone | rev | cut -c 2- | rev)
@@ -50,7 +57,7 @@ mkdir /mnt/kubelet
 echo 'KUBELET_EXTRA_ARGS="--root-dir=/mnt/kubelet --cloud-provider=aws"' > /etc/default/kubelet
 
 cat >init-config.yaml <<EOF
-apiVersion: kubeadm.k8s.io/v1alpha3
+apiVersion: kubeadm.k8s.io/v1beta2
 kind: InitConfiguration
 bootstrapTokens:
 - groups:
@@ -61,14 +68,16 @@ nodeRegistration:
   name: "$(hostname -f)"
   taints: []
 ---
-apiVersion: kubeadm.k8s.io/v1alpha3
+apiVersion: kubeadm.k8s.io/v1beta2
 kind: ClusterConfiguration
-apiServerExtraArgs:
-  cloud-provider: aws
-controllerManagerExtraArgs:
-  cloud-provider: aws
+apiServer:
+  extraArgs:
+    cloud-provider: aws
+controllerManager:
+  extraArgs:
+    cloud-provider: aws
 networking:
-  podSubnet: 10.244.0.0/16
+  podSubnet: 192.168.0.0/16
 EOF
 
 # Check if there is an etcd backup on the s3 bucket and restore from it if there is
@@ -99,10 +108,6 @@ else
   touch /tmp/fresh-cluster
 fi
 
-# Pass bridged IPv4 traffic to iptables chains (required by Flannel like the above cidr setting)
-echo "net.bridge.bridge-nf-call-iptables = 1" > /etc/sysctl.d/60-flannel.conf
-service procps start
-
 # Set up kubectl for the ubuntu user
 mkdir -p /home/ubuntu/.kube && cp -i /etc/kubernetes/admin.conf /home/ubuntu/.kube/config && chown -R ubuntu. /home/ubuntu/.kube
 echo 'source <(kubectl completion bash)' >> /home/ubuntu/.bashrc
@@ -114,17 +119,23 @@ mv linux-amd64/helm /usr/local/bin/
 rm -rf linux-amd64 helm-*
 
 if [ -f /tmp/fresh-cluster ]; then
-  su -c 'kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/13a990bb716c82a118b8e825b78189dcfbfb2f1e/Documentation/kube-flannel.yml' ubuntu
+    su -c 'kubectl apply -f https://docs.projectcalico.org/v3.8/manifests/calico.yaml' ubuntu
 
   # Set up helm
   su -c 'kubectl create serviceaccount tiller --namespace=kube-system' ubuntu
   su -c 'kubectl create clusterrolebinding tiller-admin --serviceaccount=kube-system:tiller --clusterrole=cluster-admin' ubuntu
-  su -c 'helm init --service-account=tiller' ubuntu
+  # This is a workaround since helm init fails on K8s 1.16.x because of api group change
+  # See https://github.com/helm/helm/issues/6374
+  su -c 'helm init --service-account tiller --output yaml | sed '"'"'s@apiVersion: extensions/v1beta1@apiVersion: apps/v1@'"'"' | sed '"'"'s@  replicas: 1@  replicas: 1\n  selector: {"matchLabels": {"app": "helm", "name": "tiller"}}@'"'"' | kubectl apply -f -' ubuntu
+  su -c 'helm init --client-only' ubuntu
 
   # Install cert-manager
   if [[ "${certmanagerenabled}" == "1" ]]; then
     sleep 60 # Give Tiller a minute to start up
-    su -c 'helm install --name cert-manager --namespace cert-manager --version 0.5.2 stable/cert-manager --set createCustomResource=false && helm upgrade --install --namespace cert-manager --version 0.5.2 cert-manager stable/cert-manager --set createCustomResource=true' ubuntu
+
+    su -c 'kubectl apply -f https://raw.githubusercontent.com/jetstack/cert-manager/release-0.10/deploy/manifests/00-crds.yaml' ubuntu
+    su -c 'helm repo add jetstack https://charts.jetstack.io' ubuntu
+    su -c 'helm install --name cert-manager --namespace cert-manager --version 0.10.1 jetstack/cert-manager' ubuntu
   fi
 
   # Install all the YAML we've put on S3
@@ -159,7 +170,7 @@ if [[ "${backupenabled}" == "1" ]]; then
 	echo "Polling $${NOTICE_URL} every $${POLL_INTERVAL} second(s)"
 	
 	# To whom it may concern: http://superuser.com/questions/590099/can-i-make-curl-fail-with-an-exitcode-different-than-0-if-the-http-status-code-i
-	while http_status=$(curl -o /dev/null -w '%{http_code}' -sL $${NOTICE_URL}); [ $${http_status} -ne 200 ]; do
+	while http_status=$(curl -o /dev/null -w '%%{http_code}' -sL $${NOTICE_URL}); [ $${http_status} -ne 200 ]; do
 	  echo "Polled termination notice URL. HTTP Status was $${http_status}."
 	  sleep $${POLL_INTERVAL}
 	done

@@ -1,7 +1,5 @@
 ## Really cheap Kubernetes cluster on AWS with kubeadm
 
-**This project no longer seems to be working and I have stopped working on it. Feel free to fork it and/or use it as the basis for your own experiments.**
-
 This repository contains a bunch of Bash and Terraform code which provisions what I believe to be the cheapest possible single master Kubernetes cluster on AWS. You can run a 1 master, 1 worker cluster for somewhere around $6 a month, or just the master node (which can also run pods) for around $3 a month.
 
 To achieve this, it uses m1.small spot instances and the free ephemeral storage they come with instead of EBS volumes.
@@ -11,7 +9,7 @@ Current features:
 * Automatic backup and recovery. So if your master gets terminated, when the replacement is provisioned by AWS it will pick up where the old one left off without you doing anything. 😁
 * Completely automated provisioning through Terraform and Bash.
 * Variables for many things including number of workers (provisioned using an auto-scaling group) and EC2 instance type.
-* Helm Tiller (currently v2.12.0)
+* Helm Tiller 
 * [External DNS](https://github.com/kubernetes-incubator/external-dns) and [Nginx Ingress](https://github.com/kubernetes/ingress-nginx) as a cheap ELB alternative, with [Cert Manager](https://github.com/jetstack/cert-manager) for TLS certificates via Let's Encrypt.
 * Auto Scaling of worker nodes, if you enable the [Cluster AutoScaler](https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler).
 * Persistent Volumes using GP2 storage on EBS.
@@ -22,13 +20,14 @@ Current features:
 ### Run it!
 
 1. Clone the repo
-2. [Install Terraform](https://www.terraform.io/intro/getting-started/install.html)
-3. Make an SSH key on us-east-1 from the AWS console
-4. Run terraform plan: `terraform plan -var k8s-ssh-key=<aws-ssh-key-name> -var admin-cidr-blocks="<my-public-ip-address>/32"`
-5. Build out infrastructure: `terraform apply -var k8s-ssh-key=<aws-ssh-key-name> -var admin-cidr-blocks="<my-public-ip-address>/32"`
-6. SSH to K8S master and run something: `ssh ubuntu@$(terraform output master_dns) -i <aws-ssh-key-name>.pem kubectl get no`
-7. If you enabled cert-manager, the [Cert Manager Issuer](manifests/cert-manager-issuer.yaml.tmpl) for Let's Encrypt has been applied to the default namespace. You will also need to apply it to any other namespaces you want to obtain TLS certificates for.
-8. Done!
+1. [Install Terraform](https://www.terraform.io/intro/getting-started/install.html)
+1. Make an SSH key on us-east-1 from the AWS console
+1. Initialize terraform: `terraform init`
+1. Run terraform plan: `terraform plan -var k8s-ssh-key=<aws-ssh-key-name> -var admin-cidr-blocks="<my-public-ip-address>/32"`
+1. Build out infrastructure: `terraform apply -var k8s-ssh-key=<aws-ssh-key-name> -var admin-cidr-blocks="<my-public-ip-address>/32"`
+1. SSH to K8S master and run something: `ssh ubuntu@$(terraform output master_dns) -i <aws-ssh-key-name>.pem kubectl get no`
+1. If you enabled cert-manager, the [Cert Manager Issuer](manifests/cert-manager-issuer.yaml.tmpl) for Let's Encrypt has been applied to the default namespace. You will also need to apply it to any other namespaces you want to obtain TLS certificates for.
+1. Done!
 
 Optional Variables:
 

@@ -1,3 +1,7 @@
+# NOTE: This is solely being used so that external DNS
+# can map the IPs of the nodes to Route53. There
+# may be a better way to do this.
+
 apiVersion: v1
 kind: Service
 metadata:
@@ -22,3 +26,6 @@ spec:
   selector:
     app.kubernetes.io/name: ingress-nginx
     app.kubernetes.io/part-of: ingress-nginx
+
+---
+

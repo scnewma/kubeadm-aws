@@ -1,69 +1,14 @@
+# NOTE: This is modified from the mandatory file
+# provided in the kubernetes/ingress-nginx repository
+# to run nginx on the host ports. This allows traffic
+# to get to the pods without a load balancer.
+
 apiVersion: v1
 kind: Namespace
 metadata:
   name: ingress-nginx
-
----
-
-apiVersion: extensions/v1beta1
-kind: Deployment
-metadata:
-  name: default-http-backend
   labels:
-    app.kubernetes.io/name: default-http-backend
-    app.kubernetes.io/part-of: ingress-nginx
-  namespace: ingress-nginx
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: default-http-backend
-      app.kubernetes.io/part-of: ingress-nginx
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: default-http-backend
-        app.kubernetes.io/part-of: ingress-nginx
-    spec:
-      terminationGracePeriodSeconds: 60
-      containers:
-        - name: default-http-backend
-          # Any image is permissible as long as:
-          # 1. It serves a 404 page at /
-          # 2. It serves 200 on a /healthz endpoint
-          image: k8s.gcr.io/defaultbackend-amd64:1.5
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: 8080
-              scheme: HTTP
-            initialDelaySeconds: 30
-            timeoutSeconds: 5
-          ports:
-            - containerPort: 8080
-          resources:
-            limits:
-              cpu: 10m
-              memory: 20Mi
-            requests:
-              cpu: 10m
-              memory: 20Mi
-
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: default-http-backend
-  namespace: ingress-nginx
-  labels:
-    app.kubernetes.io/name: default-http-backend
-    app.kubernetes.io/part-of: ingress-nginx
-spec:
-  ports:
-    - port: 80
-      targetPort: 8080
-  selector:
-    app.kubernetes.io/name: default-http-backend
+    app.kubernetes.io/name: ingress-nginx
     app.kubernetes.io/part-of: ingress-nginx
 
 ---
@@ -78,7 +23,6 @@ metadata:
     app.kubernetes.io/part-of: ingress-nginx
 
 ---
-
 kind: ConfigMap
 apiVersion: v1
 metadata:
@@ -89,7 +33,6 @@ metadata:
     app.kubernetes.io/part-of: ingress-nginx
 
 ---
-
 kind: ConfigMap
 apiVersion: v1
 metadata:
@@ -100,7 +43,6 @@ metadata:
     app.kubernetes.io/part-of: ingress-nginx
 
 ---
-
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -145,14 +87,6 @@ rules:
       - list
       - watch
   - apiGroups:
-      - "extensions"
-    resources:
-      - ingresses
-    verbs:
-      - get
-      - list
-      - watch
-  - apiGroups:
       - ""
     resources:
       - events
@@ -161,6 +95,16 @@ rules:
       - patch
   - apiGroups:
       - "extensions"
+      - "networking.k8s.io"
+    resources:
+      - ingresses
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - "extensions"
+      - "networking.k8s.io"
     resources:
       - ingresses/status
     verbs:
@@ -248,8 +192,8 @@ subjects:
 
 ---
 
-apiVersion: extensions/v1beta1
-kind: DaemonSet
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: nginx-ingress-controller
   namespace: ingress-nginx
@@ -257,8 +201,7 @@ metadata:
     app.kubernetes.io/name: ingress-nginx
     app.kubernetes.io/part-of: ingress-nginx
 spec:
-  updateStrategy:
-    type: RollingUpdate
+  replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: ingress-nginx
@@ -272,21 +215,21 @@ spec:
         prometheus.io/port: "10254"
         prometheus.io/scrape: "true"
     spec:
-      hostNetwork: true
-      dnsPolicy: ClusterFirstWithHostNet
+      # wait up to five minutes for the drain of connections
+      terminationGracePeriodSeconds: 300
       serviceAccountName: nginx-ingress-serviceaccount
       containers:
         - name: nginx-ingress-controller
-          image: quay.io/kubernetes-ingress-controller/nginx-ingress-controller:0.20.0
+          image: quay.io/kubernetes-ingress-controller/nginx-ingress-controller:0.26.1
           args:
             - /nginx-ingress-controller
-            - --default-backend-service=$(POD_NAMESPACE)/default-http-backend
             - --configmap=$(POD_NAMESPACE)/nginx-configuration
             - --tcp-services-configmap=$(POD_NAMESPACE)/tcp-services
             - --udp-services-configmap=$(POD_NAMESPACE)/udp-services
             - --publish-service=$(POD_NAMESPACE)/ingress-nginx
             - --annotations-prefix=nginx.ingress.kubernetes.io
           securityContext:
+            allowPrivilegeEscalation: true
             capabilities:
               drop:
                 - ALL
@@ -306,8 +249,10 @@ spec:
           ports:
             - name: http
               containerPort: 80
+              hostPort: 80
             - name: https
               containerPort: 443
+              hostPort: 443
           livenessProbe:
             failureThreshold: 3
             httpGet:
@@ -317,7 +262,7 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 10
             successThreshold: 1
-            timeoutSeconds: 1
+            timeoutSeconds: 10
           readinessProbe:
             failureThreshold: 3
             httpGet:
@@ -326,6 +271,11 @@ spec:
               scheme: HTTP
             periodSeconds: 10
             successThreshold: 1
-            timeoutSeconds: 1
+            timeoutSeconds: 10
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /wait-shutdown
 
 ---

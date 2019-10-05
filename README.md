@@ -56,7 +56,7 @@ Optional Variables:
 
 ### Ingress Notes
 
-As hinted above, this uses Nginx Ingress as an alternative to a Load Balancer. This is done by exposing ports 443 and 80 directly on each of the nodes (Workers and the Master) using a NodePort type Service. Unfortunately External DNS doesn't seem to work with Nginx Ingress when you expose it in this way, so I've had to just map a single DNS name (using the nginx-ingress-domain variable) to the NodePort service itself. External DNS will keep that entry up to date with the IPs of the nodes in the cluster; you will then have to manually add CNAME entries for your individual services.
+As hinted above, this uses Nginx Ingress as an alternative to a Load Balancer. This is done by binding the nginx pods to ports 443 and 80 directly on each of the nodes through the use of hostPorts. External DNS will keep that entry up to date with the IPs of the nodes in the cluster.
 
 I am well aware that this isn't the most secure way of exposing services, but it's secure enough for my purposes. If anyone has any suggestions on a better way of doing this without shelling out $20 a month for an ELB, please open an Issue!
 
